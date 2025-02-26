@@ -1,0 +1,5 @@
+fastapi==0.115.8
+pydantic-settings==2.8.0
+python-dotenv==1.0.1
+uvicorn==0.34.0
+elevenlabs==1.52.0
