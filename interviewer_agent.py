@@ -1,22 +1,24 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
+from fastapi import WebSocket
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
-from fastapi import WebSocket
-from pydantic_ai.models.vertexai import VertexAIModel
 from pydantic_ai.models.gemini import GeminiModel
-from websocket_route import ConnectionManager
+from pydantic_ai.models.vertexai import VertexAIModel
 
 from config import config
+from voice_encoding import VoiceModel
+from websocket_route import ConnectionManager
 
 DEMOINTERVIEW = 'demointerview'
 REALINTERVIEW = 'realinterview'
 
 
 class AiMessage(BaseModel):
-    content: str = Field(description="Response from Ai.")
+    content: str = Field(description="Response or question from Ai.")
+    expected_answer: str = Field(description="Expected answer or query from the user.")
     difficulty_level: Literal['easy', 'medium', 'hard'] = 'easy'
 
 
@@ -32,11 +34,13 @@ class Interviewer(ABC, Agent):
                  interview_type: Literal['demointerview',
                                          'realinterview'] = REALINTERVIEW,
                  *args, **kwargs
-                 ) -> None:
+                 ):
         super().__init__(*args, **kwargs)
         self.job_role = job_role
         self.job_description = job_description
         self.interview_type = interview_type
+        self.questions = []
+        self.responses = {}
         self.agent = Agent(
             model=GeminiModel(model_name='gemini-1.5-flash',
                               api_key=config.GEMINI_API_KEY),
@@ -67,13 +71,56 @@ class Interviewer(ABC, Agent):
 
 
 class DemoInterviewer(Interviewer):
-    def __init__(self, job_role: str, job_description: str, *args, **kwargs):
+    def __init__(self,
+                 job_role: str,
+                 job_description: str,
+                 manager: ConnectionManager = None,
+                 *args,
+                 **kwargs
+                 ):
         super().__init__(job_role=job_role, job_description=job_description, *args, **kwargs)
+        self.voice_client = VoiceModel()
+        self.manager = manager
 
     def get_messages(self):
-        return []
+        return self.questions
 
-    async def stream_response(self, websocket: WebSocket, user_prompt: str, manager: ConnectionManager):
+    async def handle_user_response(self, websocket: WebSocket, user_response: bytes):
+        decoded_response = self.voice_client.speech_to_text(
+            audio_data=user_response)
+        await self.stream_audio_response(websocket=websocket, user_message=decoded_response)
+
+    async def stream_audio_response(self, websocket: WebSocket, user_message: str | None = None, initialize: bool = False):
+        if not initialize and user_message is None:
+            raise ValueError("User message is required")
+        if user_message is None:
+            user_message = "Start iterview."
+        audio_stream = self.voice_client.get_demo_message_stream(user_message)
+        await self.manager.stream_message(audio_stream, websocket)
+        
+        # async with self.agent.run_stream(
+        #     user_prompt=user_message,
+        #     result_type=AiMessage,
+        #     message_history=self.get_messages()
+        # ) as result:
+        #     async for response in result.stream_structured(debounce_by=0.1):
+        #         try:
+        #             message, is_last_message = response[0].parts[0].args['content'], response[1]
+        #             if is_last_message:
+        #                 if not initialize:
+        #                     key = str(len(self.responses)) if self.responses else str(0)
+        #                     self.responses[key] = (self.questions[-1], user_message)
+        #                 self.questions.append(message)
+        #                 print(message)
+        #                 audio_stream = self.voice_client.text_to_speech_stream(
+        #                     message)
+        #                 await self.manager.stream_message(audio_stream, websocket)
+        #         except Exception as ex:
+        #             print(ex)
+        #             await self.manager.send_personal_message(message='Having a trouble. can please repeat?',
+        #                                                      websocket=websocket)
+
+    async def stream_response(self, websocket: WebSocket, user_prompt: str):
         async with self.agent.run_stream(
             user_prompt=user_prompt,
             result_type=AiMessage,
@@ -83,11 +130,11 @@ class DemoInterviewer(Interviewer):
                 try:
                     message, is_last_message = response[0].parts[0].args['content'], response[1]
                     if is_last_message:
-                        await manager.send_personal_message(message, websocket)
+                        self.get_messages().append(message)
+                        await self.manager.send_personal_message(message, websocket)
                 except Exception as ex:
                     print(ex)
-                    await manager.send_personal_message('Having a trouble. can please repeat?', websocket)
-                    pass
+                    await self.manager.send_personal_message('Having a trouble. can please repeat?', websocket)
 
 
 class RealInterviewer(Interviewer):

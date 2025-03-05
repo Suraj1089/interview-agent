@@ -19,7 +19,5 @@ class ConnectionManager:
         for connection in self.active_connections:
             await connection.send_text(message)
     
-    async def stream_message(self, websocket: WebSocket, data: bytes):
+    async def stream_message(self, data: bytes, websocket: WebSocket):
         await websocket.send_bytes(data)
-            
-manager = ConnectionManager()
