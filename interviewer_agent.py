@@ -1,16 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
-from fastapi import WebSocket
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.gemini import GeminiModel
-from pydantic_ai.models.vertexai import VertexAIModel
 
 from config import config
 from voice_encoding import VoiceModel
-from websocket_route import ConnectionManager
 
 DEMOINTERVIEW = 'demointerview'
 REALINTERVIEW = 'realinterview'
