@@ -25,12 +25,12 @@ class AiMessage(BaseModel):
 class UserMessage(BaseModel):
     content: str = Field(description="Response given by user")
 
-
+questions = []
 @dataclass(init=False)
 class Interviewer(ABC, Agent):
     def __init__(self,
-                 job_role: str,
-                 job_description: str,
+                 job_role: str | None = None,
+                 job_description: str | None = None,
                  interview_type: Literal['demointerview',
                                          'realinterview'] = REALINTERVIEW,
                  *args, **kwargs
@@ -39,7 +39,7 @@ class Interviewer(ABC, Agent):
         self.job_role = job_role
         self.job_description = job_description
         self.interview_type = interview_type
-        self.questions = []
+        self.questions = questions
         self.responses = {}
         self.agent = Agent(
             model=GeminiModel(model_name='gemini-1.5-flash',
@@ -72,55 +72,53 @@ class Interviewer(ABC, Agent):
 
 class DemoInterviewer(Interviewer):
     def __init__(self,
-                 job_role: str,
-                 job_description: str,
-                 manager: ConnectionManager = None,
+                 job_role: str | None = None,
+                 job_description: str | None = None,
                  *args,
                  **kwargs
                  ):
         super().__init__(job_role=job_role, job_description=job_description, *args, **kwargs)
         self.voice_client = VoiceModel()
-        self.manager = manager
 
     def get_messages(self):
         return self.questions
 
-    async def handle_user_response(self, websocket: WebSocket, user_response: bytes):
+    async def handle_user_response(self, user_response: bytes):
         decoded_response = self.voice_client.speech_to_text(
             audio_data=user_response)
-        await self.stream_audio_response(websocket=websocket, user_message=decoded_response)
+        return self.stream_audio_response(user_message=decoded_response)
+        
 
-    async def stream_audio_response(self, websocket: WebSocket, user_message: str | None = None, initialize: bool = False):
+    async def stream_audio_response(self, user_message: str | None = None, initialize: bool = False):
         if not initialize and user_message is None:
             raise ValueError("User message is required")
         if user_message is None:
-            user_message = "Start iterview."
-        audio_stream = self.voice_client.get_demo_message_stream(user_message)
-        await self.manager.stream_message(audio_stream, websocket)
+            user_message = "Start interview."
         
-        # async with self.agent.run_stream(
-        #     user_prompt=user_message,
-        #     result_type=AiMessage,
-        #     message_history=self.get_messages()
-        # ) as result:
-        #     async for response in result.stream_structured(debounce_by=0.1):
-        #         try:
-        #             message, is_last_message = response[0].parts[0].args['content'], response[1]
-        #             if is_last_message:
-        #                 if not initialize:
-        #                     key = str(len(self.responses)) if self.responses else str(0)
-        #                     self.responses[key] = (self.questions[-1], user_message)
-        #                 self.questions.append(message)
-        #                 print(message)
-        #                 audio_stream = self.voice_client.text_to_speech_stream(
-        #                     message)
-        #                 await self.manager.stream_message(audio_stream, websocket)
-        #         except Exception as ex:
-        #             print(ex)
-        #             await self.manager.send_personal_message(message='Having a trouble. can please repeat?',
-        #                                                      websocket=websocket)
+        async with self.agent.run_stream(user_prompt=user_message,
+                                         result_type=AiMessage, message_history=self.get_messages()) as response:
+            message = await response.get_data()
+            message = message.content
+            audio_stream = self.voice_client.client.text_to_speech.convert_as_stream(
+                text=message,
+                voice_id="JBFqnCBsd6RMkjVDRZzb",
+                model_id="eleven_multilingual_v2"
+            )
+            return audio_stream
 
-    async def stream_response(self, websocket: WebSocket, user_prompt: str):
+
+        # if not initialize:
+        #     key = str(len(self.responses)) if self.responses else str(0)
+        #     self.responses[key] = (self.questions[-1], user_message)
+        # self.questions.append(message)
+
+        # # ✅ Stream audio response in chunks
+        # async for chunk in self.voice_client.text_to_speech_stream(message):
+        #     yield chunk  # Properly stream audio chunks
+
+
+
+    async def stream_response(self, user_prompt: str):
         async with self.agent.run_stream(
             user_prompt=user_prompt,
             result_type=AiMessage,
@@ -131,10 +129,9 @@ class DemoInterviewer(Interviewer):
                     message, is_last_message = response[0].parts[0].args['content'], response[1]
                     if is_last_message:
                         self.get_messages().append(message)
-                        await self.manager.send_personal_message(message, websocket)
                 except Exception as ex:
                     print(ex)
-                    await self.manager.send_personal_message('Having a trouble. can please repeat?', websocket)
+                    raise ex
 
 
 class RealInterviewer(Interviewer):

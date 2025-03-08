@@ -1,10 +1,10 @@
-from typing import Annotated
-
-from fastapi import Cookie, Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from config import config
 from interviewer_agent import DemoInterviewer
-from websocket_route import ConnectionManager
 
 app = FastAPI(
     title="Interview Agent",
@@ -16,33 +16,41 @@ app = FastAPI(
     redoc_url="/v1/redoc"
 )
 
-
-async def get_session(
-    websocket: WebSocket,
-    session_id: Annotated[str | None, Cookie()] = None
-):
-    print(session_id)
-    # TODO
-    # if session_id is None:
-    #     raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
-    return session_id or "random"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(
-    *,
-    websocket: WebSocket,
-    session_id: Annotated[str, Depends(get_session)]
-):
-    manager = ConnectionManager()
-    await manager.connect(websocket)
-    agent = DemoInterviewer(job_role="Software engineer",
-                            job_description="1 year of experience. required skills python, django, postgres.",
-                            manager=manager)
-    await agent.stream_audio_response(websocket=websocket, initialize=True)
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            await agent.handle_user_response(websocket=websocket, user_response=data)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+class JobDetails(BaseModel):
+    job_role: str | None = None
+    job_description: str | None = None
+
+
+agent: DemoInterviewer | None = None
+
+
+@app.post('/initialize')
+async def start_interview(job_details: JobDetails):
+    global agent
+    agent = DemoInterviewer(job_role=job_details.job_role,
+                            job_description=job_details.job_description)
+
+    response = await agent.stream_audio_response(user_message="Start interview with introduction", initialize=True)
+    return StreamingResponse(response, media_type="audio/mpeg")
+
+
+@app.post('/stream')
+async def stream_audio(stream: UploadFile = File(...)):
+    global agent
+    print(agent)
+    if agent is None:
+        return {'data': 'error'}
+    text_bytes = await stream.read()
+    text_string = text_bytes.decode('utf-8')
+    audio_output = await agent.stream_audio_response(user_message=text_string)
+
+    return StreamingResponse(audio_output, media_type="audio/mpeg")
